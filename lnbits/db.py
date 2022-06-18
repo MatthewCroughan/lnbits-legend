@@ -73,16 +73,11 @@ class Connection(Compat):
     async def fetchone(self, query: str, values: tuple = ()):
         result = await self.conn.execute(self.rewrite_query(query), values)
         row = result.fetchone()
-        result.close() 
+        result.close()
         return row
 
     async def execute(self, query: str, values: tuple = ()):
-        try:
-            return await self.conn.execute(self.rewrite_query(query), values)
-        except sqla.exc.ProgrammingError as e:
-            print(e)
-            raise
-            
+        return await self.conn.execute(self.rewrite_query(query), values)
 
 
 class Database(Compat):
@@ -179,12 +174,12 @@ class Database(Compat):
     async def fetchall(self, query: str, values: tuple = ()) -> list:
         async with self.connect() as conn:
             result = await conn.execute(query, values)
-            return  result.fetchall()
+            return result.fetchall()
 
     async def fetchone(self, query: str, values: tuple = ()):
         async with self.connect() as conn:
             result = await conn.execute(query, values)
-            row =  result.fetchone()
+            row = result.fetchone()
             result.close()
             return row
 

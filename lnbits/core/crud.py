@@ -17,7 +17,9 @@ from .models import User, Wallet, Payment, BalanceCheck
 
 async def create_account(conn: Optional[Connection] = None) -> User:
     user_id = uuid4().hex
-    await (conn or db).execute("INSERT INTO accounts (id) VALUES (?)", (user_id,))
+    await (conn or db).execute(
+        "INSERT INTO accounts (id) VALUES (:user_id)", {"user_id": user_id}
+    )
 
     new_account = await get_account(user_id=user_id, conn=conn)
     assert new_account, "Newly created account couldn't be retrieved"
@@ -29,7 +31,8 @@ async def get_account(
     user_id: str, conn: Optional[Connection] = None
 ) -> Optional[User]:
     row = await (conn or db).fetchone(
-        "SELECT id, email, pass as password FROM accounts WHERE id = ?", (user_id,)
+        "SELECT id, email, pass as password FROM accounts WHERE id = :user_id",
+        {"user_id": user_id},
     )
 
     return User(**row) if row else None
@@ -37,21 +40,21 @@ async def get_account(
 
 async def get_user(user_id: str, conn: Optional[Connection] = None) -> Optional[User]:
     user = await (conn or db).fetchone(
-        "SELECT id, email FROM accounts WHERE id = ?", (user_id,)
+        "SELECT id, email FROM accounts WHERE id = :user_id", {"user_id": user_id}
     )
 
     if user:
         extensions = await (conn or db).fetchall(
-            """SELECT extension FROM extensions WHERE "user" = ? AND active""",
-            (user_id,),
+            """SELECT extension FROM extensions WHERE "user" = :user_id AND active""",
+            {"user_id": user_id},
         )
         wallets = await (conn or db).fetchall(
             """
             SELECT *, COALESCE((SELECT balance FROM balances WHERE wallet = wallets.id), 0) AS balance_msat
             FROM wallets
-            WHERE "user" = ?
+            WHERE "user" = :user_id
             """,
-            (user_id,),
+            {"user_id": user_id},
         )
     else:
         return None
@@ -72,10 +75,10 @@ async def update_user_extension(
 ) -> None:
     await (conn or db).execute(
         """
-        INSERT INTO extensions ("user", extension, active) VALUES (?, ?, ?)
-        ON CONFLICT ("user", extension) DO UPDATE SET active = ?
+        INSERT INTO extensions ("user", extension, active) VALUES (:user_id, :extension, :active)
+        ON CONFLICT ("user", extension) DO UPDATE SET active = :active
         """,
-        (user_id, extension, active, active),
+        {"user_id": user_id, "extension": extension, "active": active},
     )
 
 
@@ -93,15 +96,15 @@ async def create_wallet(
     await (conn or db).execute(
         """
         INSERT INTO wallets (id, name, "user", adminkey, inkey)
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (:wallet_id, :wallet_name, :user_id, :uuid_a, :uuid_i)
         """,
-        (
-            wallet_id,
-            wallet_name or DEFAULT_WALLET_NAME,
-            user_id,
-            uuid4().hex,
-            uuid4().hex,
-        ),
+        {
+            "wallet_id": wallet_id,
+            "wallet_name": wallet_name or DEFAULT_WALLET_NAME,
+            "user_id": user_id,
+            "uuid_a": uuid4().hex,
+            "uuid_i": uuid4().hex,
+        },
     )
 
     new_wallet = await get_wallet(wallet_id=wallet_id, conn=conn)
@@ -116,10 +119,10 @@ async def update_wallet(
     await (conn or db).execute(
         """
         UPDATE wallets SET
-            name = ?
-        WHERE id = ?
+            name = :new_name
+        WHERE id = :wallet_id
         """,
-        (new_name, wallet_id),
+        {"new_name": new_name, "wallet_id": wallet_id},
     )
 
 
@@ -133,9 +136,9 @@ async def delete_wallet(
             "user" = 'del:' || w."user",
             adminkey = 'del:' || w.adminkey,
             inkey = 'del:' || w.inkey
-        WHERE id = ? AND "user" = ?
+        WHERE id = :wallet_id AND "user" = :user_id
         """,
-        (wallet_id, user_id),
+        {"wallet_id": wallet_id, "user_id": user_id},
     )
 
 
@@ -146,9 +149,9 @@ async def get_wallet(
         """
         SELECT *, COALESCE((SELECT balance FROM balances WHERE wallet = wallets.id), 0) AS balance_msat
         FROM wallets
-        WHERE id = ?
+        WHERE id = :wallet_id
         """,
-        (wallet_id,),
+        {"wallet_id": wallet_id},
     )
 
     return Wallet(**row) if row else None
@@ -161,9 +164,9 @@ async def get_wallet_for_key(
         """
         SELECT *, COALESCE((SELECT balance FROM balances WHERE wallet = wallets.id), 0) AS balance_msat
         FROM wallets
-        WHERE adminkey = ? OR inkey = ?
+        WHERE adminkey = :key OR inkey = :key
         """,
-        (key, key),
+        {"key": key},
     )
 
     if not row:
@@ -184,7 +187,7 @@ async def get_standalone_payment(
     conn: Optional[Connection] = None,
     incoming: Optional[bool] = False,
 ) -> Optional[Payment]:
-    clause: str = "checking_id = ? OR hash = ?"
+    clause: str = "checking_id = :checking_id_or_hash OR hash = :checking_id_or_hash"
     if incoming:
         clause = f"({clause}) AND amount > 0"
     row = await (conn or db).fetchone(
@@ -194,7 +197,7 @@ async def get_standalone_payment(
         WHERE {clause}
         LIMIT 1
         """,
-        (checking_id_or_hash, checking_id_or_hash),
+        {"checking_id_or_hash": checking_id_or_hash},
     )
 
     return Payment.from_row(row) if row else None
@@ -207,9 +210,9 @@ async def get_wallet_payment(
         """
         SELECT *
         FROM apipayments
-        WHERE wallet = ? AND hash = ?
+        WHERE wallet = :wallet_id AND hash = :payment_hash
         """,
-        (wallet_id, payment_hash),
+        {"wallet_id": wallet_id, "payment_hash": payment_hash},
     )
 
     return Payment.from_row(row) if row else None
@@ -232,7 +235,7 @@ async def get_payments(
     Filters payments to be returned by complete | pending | outgoing | incoming.
     """
 
-    args: List[Any] = []
+    args: Dict = {}
     clause: List[str] = []
 
     if since != None:
@@ -242,11 +245,11 @@ async def get_payments(
             clause.append("time > cast(:timestamp AS timestamp)")
         else:
             clause.append("time > :timestamp")
-        args.append({"timestamp":since})
+        args["timestamp"] = since
 
     if wallet_id:
         clause.append("wallet = :wallet")
-        args.append({"wallet": wallet_id})
+        args["wallet"] = wallet_id
 
     if complete and pending:
         pass
@@ -282,15 +285,18 @@ async def get_payments(
     where = ""
     if clause:
         where = f"WHERE {' AND '.join(clause)}"
-    
-    rows = await (conn or db).fetchall(f"""
+
+    rows = await (conn or db).fetchall(
+        f"""
         SELECT *
         FROM apipayments
         {where}
         ORDER BY time DESC
         {limit_offset_clause}
-        """, args)
-        
+        """,
+        args,
+    )
+
     return [Payment.from_row(row) for row in rows]
 
 
@@ -302,8 +308,9 @@ async def delete_expired_invoices(
         f"""
         DELETE FROM apipayments
         WHERE pending = true AND amount > 0
-          AND time < {db.timestamp_now} - {db.interval_seconds(2592000)}
-        """
+          AND time < :timestamp
+        """,
+        {"timestamp": f"{db.timestamp_now} - {db.interval_seconds(2592000)}"},
     )
 
     # then we delete all expired invoices, checking one by one
@@ -313,8 +320,9 @@ async def delete_expired_invoices(
         FROM apipayments
         WHERE pending = true
           AND bolt11 IS NOT NULL
-          AND amount > 0 AND time < {db.timestamp_now} - {db.interval_seconds(86400)}
-        """
+          AND amount > 0 AND time < :timestamp
+        """,
+        {"timestamp": f"{db.timestamp_now} - {db.interval_seconds(86400)}"},
     )
     for (payment_request,) in rows:
         try:
@@ -331,7 +339,7 @@ async def delete_expired_invoices(
             DELETE FROM apipayments
             WHERE pending = true AND hash = :hash
             """,
-            [{"hash": invoice.payment_hash}]
+            {"hash": invoice.payment_hash},
         )
 
 
@@ -354,28 +362,31 @@ async def create_payment(
     webhook: Optional[str] = None,
     conn: Optional[Connection] = None,
 ) -> Payment:
+    e = None
+    if extra and extra != {} and type(extra) is dict:
+        e = json.dumps(extra)
+
     await (conn or db).execute(
         """
         INSERT INTO apipayments
           (wallet, checking_id, bolt11, hash, preimage,
            amount, pending, memo, fee, extra, webhook)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (:wallet, :checking_id, :bolt11, :hash, :preimage, 
+           :amount, :pending, :memo, :fee, :extra, :webhook)
         """,
-        (
-            wallet_id,
-            checking_id,
-            payment_request,
-            payment_hash,
-            preimage,
-            amount,
-            pending,
-            memo,
-            fee,
-            json.dumps(extra)
-            if extra and extra != {} and type(extra) is dict
-            else None,
-            webhook,
-        ),
+        {
+            "wallet": wallet_id,
+            "checking_id": checking_id,
+            "bolt11": payment_request,
+            "hash": payment_hash,
+            "preimage": preimage,
+            "amount": amount,
+            "pending": pending,
+            "memo": memo,
+            "fee": fee,
+            "extra": e,
+            "webhook": webhook,
+        },
     )
 
     new_payment = await get_wallet_payment(wallet_id, payment_hash, conn=conn)
@@ -388,14 +399,15 @@ async def update_payment_status(
     checking_id: str, pending: bool, conn: Optional[Connection] = None
 ) -> None:
     await (conn or db).execute(
-        "UPDATE apipayments SET pending = ? WHERE checking_id = ?",
-        (pending, checking_id),
+        "UPDATE apipayments SET pending = :pending WHERE checking_id = :checking_id",
+        {"pending": pending, "checking_id": checking_id},
     )
 
 
 async def delete_payment(checking_id: str, conn: Optional[Connection] = None) -> None:
     await (conn or db).execute(
-        "DELETE FROM apipayments WHERE checking_id = ?", (checking_id,)
+        "DELETE FROM apipayments WHERE checking_id = :checking_id",
+        {"checking_id": checking_id},
     )
 
 
@@ -405,9 +417,9 @@ async def check_internal(
     row = await (conn or db).fetchone(
         """
         SELECT checking_id FROM apipayments
-        WHERE hash = ? AND pending AND amount > 0
+        WHERE hash = :hash AND pending AND amount > 0
         """,
-        (payment_hash,),
+        {"hash": payment_hash},
     )
     if not row:
         return None
@@ -426,10 +438,10 @@ async def save_balance_check(
 
     await (conn or db).execute(
         """
-        INSERT INTO balance_check (wallet, service, url) VALUES (?, ?, ?)
-        ON CONFLICT (wallet, service) DO UPDATE SET url = ?
+        INSERT INTO balance_check (wallet, service, url) VALUES (:wallet_id, :domain, :url)
+        ON CONFLICT (wallet, service) DO UPDATE SET url = :url
         """,
-        (wallet_id, domain, url, url),
+        {"wallet_id": wallet_id, "domain": domain, "url": url},
     )
 
 
@@ -440,9 +452,9 @@ async def get_balance_check(
         """
         SELECT wallet, service, url
         FROM balance_check
-        WHERE wallet = ? AND service = ?
+        WHERE wallet = :wallet_id AND service = :domain
         """,
-        (wallet_id, domain),
+        {"wallet_id": wallet_id, "domain": domain},
     )
     return BalanceCheck.from_row(row) if row else None
 
@@ -461,10 +473,10 @@ async def save_balance_notify(
 ):
     await (conn or db).execute(
         """
-        INSERT INTO balance_notify (wallet, url) VALUES (?, ?)
-        ON CONFLICT (wallet) DO UPDATE SET url = ?
+        INSERT INTO balance_notify (wallet, url) VALUES (:wallet_id, :url)
+        ON CONFLICT (wallet) DO UPDATE SET url = :url
         """,
-        (wallet_id, url, url),
+        {"wallet_id": wallet_id, "url": url},
     )
 
 
@@ -475,8 +487,8 @@ async def get_balance_notify(
         """
         SELECT url
         FROM balance_notify
-        WHERE wallet = ?
+        WHERE wallet = :wallet_id
         """,
-        (wallet_id,),
+        {"wallet_id": wallet_id},
     )
     return row[0] if row else None
