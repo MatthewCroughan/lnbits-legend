@@ -237,16 +237,16 @@ async def get_payments(
 
     if since != None:
         if db.type == POSTGRES:
-            clause.append("time > to_timestamp(?)")
+            clause.append("time > to_timestamp(:timestamp)")
         elif db.type == COCKROACH:
-            clause.append("time > cast(? AS timestamp)")
+            clause.append("time > cast(:timestamp AS timestamp)")
         else:
-            clause.append("time > ?")
-        args.append(since)
+            clause.append("time > :timestamp")
+        args.append({"timestamp":since})
 
     if wallet_id:
-        clause.append("wallet = ?")
-        args.append(wallet_id)
+        clause.append("wallet = :wallet")
+        args.append({"wallet": wallet_id})
 
     if complete and pending:
         pass
@@ -282,17 +282,15 @@ async def get_payments(
     where = ""
     if clause:
         where = f"WHERE {' AND '.join(clause)}"
-
-    rows = await (conn or db).fetchall(
-        f"""
+    
+    rows = await (conn or db).fetchall(f"""
         SELECT *
         FROM apipayments
         {where}
         ORDER BY time DESC
         {limit_offset_clause}
-        """,
-        tuple(args),
-    )
+        """, args)
+        
     return [Payment.from_row(row) for row in rows]
 
 
@@ -331,9 +329,9 @@ async def delete_expired_invoices(
         await (conn or db).execute(
             """
             DELETE FROM apipayments
-            WHERE pending = true AND hash = ?
+            WHERE pending = true AND hash = :hash
             """,
-            (invoice.payment_hash,),
+            [{"hash": invoice.payment_hash}]
         )
 
 

@@ -5,11 +5,11 @@ import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from sqlalchemy import create_engine
-from sqlalchemy_aio.base import AsyncConnection
-from sqlalchemy_aio.strategy import ASYNCIO_STRATEGY  # type: ignore
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncConnection
 
 from .settings import LNBITS_DATA_FOLDER, LNBITS_DATABASE_URL
+import sqlalchemy as sqla
+
 
 POSTGRES = "POSTGRES"
 COCKROACH = "COCKROACH"
@@ -64,7 +64,7 @@ class Connection(Compat):
         if self.type in {POSTGRES, COCKROACH}:
             query = query.replace("%", "%%")
             query = query.replace("?", "%s")
-        return query
+        return sqla.text(query)
 
     async def fetchall(self, query: str, values: tuple = ()) -> list:
         result = await self.conn.execute(self.rewrite_query(query), values)
@@ -72,12 +72,17 @@ class Connection(Compat):
 
     async def fetchone(self, query: str, values: tuple = ()):
         result = await self.conn.execute(self.rewrite_query(query), values)
-        row = await result.fetchone()
-        await result.close()
+        row = result.fetchone()
+        result.close() 
         return row
 
     async def execute(self, query: str, values: tuple = ()):
-        return await self.conn.execute(self.rewrite_query(query), values)
+        try:
+            return await self.conn.execute(self.rewrite_query(query), values)
+        except sqla.exc.ProgrammingError as e:
+            print(e)
+            raise
+            
 
 
 class Database(Compat):
@@ -132,7 +137,7 @@ class Database(Compat):
         else:
             if os.path.isdir(LNBITS_DATA_FOLDER):
                 self.path = os.path.join(LNBITS_DATA_FOLDER, f"{self.name}.sqlite3")
-                database_uri = f"sqlite:///{self.path}"
+                database_uri = f"sqlite+aiosqlite:///{self.path}"
                 self.type = SQLITE
             else:
                 raise NotADirectoryError(
@@ -146,7 +151,7 @@ class Database(Compat):
         else:
             self.schema = None
 
-        self.engine = create_engine(database_uri, strategy=ASYNCIO_STRATEGY)
+        self.engine = create_async_engine(database_uri, future=True)
         self.lock = asyncio.Lock()
 
     @asynccontextmanager
@@ -174,13 +179,13 @@ class Database(Compat):
     async def fetchall(self, query: str, values: tuple = ()) -> list:
         async with self.connect() as conn:
             result = await conn.execute(query, values)
-            return await result.fetchall()
+            return  result.fetchall()
 
     async def fetchone(self, query: str, values: tuple = ()):
         async with self.connect() as conn:
             result = await conn.execute(query, values)
-            row = await result.fetchone()
-            await result.close()
+            row =  result.fetchone()
+            result.close()
             return row
 
     async def execute(self, query: str, values: tuple = ()):

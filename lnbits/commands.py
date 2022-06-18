@@ -4,6 +4,7 @@ import click
 import importlib
 import re
 import os
+import sqlalchemy as sqla
 
 from .db import SQLITE, POSTGRES, COCKROACH
 from .core import db as core_db, migrations as core_migrations
@@ -14,7 +15,6 @@ from .helpers import (
     url_for_vendored,
 )
 from .settings import LNBITS_PATH
-
 
 @click.command("migrate")
 def db_migrate():
@@ -55,10 +55,10 @@ async def migrate_databases():
 
     async def set_migration_version(conn, db_name, version):
         await conn.execute(
-            """
+            sqla.text("""
             INSERT INTO dbversions (db, version) VALUES (?, ?)
             ON CONFLICT (db) DO UPDATE SET version = ?
-            """,
+            """),
             (db_name, version, version),
         )
 
@@ -91,7 +91,8 @@ async def migrate_databases():
         if not exists:
             await core_migrations.m000_create_migrations_table(conn)
 
-        rows = await (await conn.execute("SELECT * FROM dbversions")).fetchall()
+        res = await conn.execute("SELECT * FROM dbversions")
+        rows = res.fetchall()
         current_versions = {row["db"]: row["version"] for row in rows}
         matcher = re.compile(r"^m(\d\d\d)_")
         await run_migration(conn, core_migrations)
